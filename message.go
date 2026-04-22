@@ -350,15 +350,30 @@ func parseGroup(mp *msgParser, tags []Tag) {
 				fields = getGroupFields(mp.msg, searchTags, mp.appDataDictionary)
 				continue
 			}
-			if len(tags) > 1 {
-				searchTags = tags[:len(tags)-1]
-			}
-			// Did this tag occur after a nested group and belongs to the parent group.
-			if isNumInGroupField(mp.msg, searchTags, mp.appDataDictionary) {
-				// Add the field member to the group.
+			// The field closed one or more nested groups.  Walk back up the tag
+			// stack: if the tag is a member of an ancestor group's template,
+			// keep parsing in that ancestor scope.  Otherwise it's a body-root
+			// field that happens to sit after a group and must surface at the
+			// body level — not be silently absorbed into the parent group.
+			groupMember := false
+			for depth := len(tags) - 1; depth >= 1; depth-- {
+				ancestorTags := tags[:depth]
+				if !isNumInGroupField(mp.msg, ancestorTags, mp.appDataDictionary) {
+					continue
+				}
+				ancestorFields := getGroupFields(mp.msg, ancestorTags, mp.appDataDictionary)
+				if !isGroupMember(mp.parsedFieldBytes.tag, ancestorFields) {
+					continue
+				}
+				// Field is a member of this ancestor group — pop the tag stack
+				// down to it and keep parsing in that scope.
 				dm = append(dm, *mp.parsedFieldBytes)
-				// Continue parsing the parent group.
-				fields = getGroupFields(mp.msg, searchTags, mp.appDataDictionary)
+				tags = ancestorTags
+				fields = ancestorFields
+				groupMember = true
+				break
+			}
+			if groupMember {
 				continue
 			}
 			// Add the repeating group.

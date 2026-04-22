@@ -448,22 +448,16 @@ func (s *MessageSuite) TestReBuildWithRepeatingGroupMultipleEntriesInGroupForRes
 	s.True(bytes.Equal(expectedResendBytes, resendBytes), "Unexpected bytes,\n expected: %s\n  but was: %s", expectedResendBytes, resendBytes)
 }
 
-// TestParseGroup_BodyFieldAfterNestedGroup documents a parser bug in
-// parseGroup: when a body-level field appears on the wire immediately after
-// a nested repeating group closes, the parser misattributes it to the parent
-// group buffer instead of surfacing it at the message body level.
+// TestParseGroup_BodyFieldAfterNestedGroup verifies parseGroup correctly
+// surfaces a body-level field that appears on the wire immediately after a
+// nested repeating group closes, rather than glomming it into the parent
+// group buffer.
 //
-// Production trigger: FIX 4.4 MassQuoteAcknowledgement (35=b) wire emitted
-// by Power-Trade ME gateway — NoQuoteSets(296) carrying a nested
-// NoQuoteEntries(295) group, followed by QuoteStatus(297) at the body
-// level. Downstream, validateRequiredFieldMap can't find 297 in
-// Body.FieldMap and rejects the spec-compliant message as
-// "Required tag missing".
-//
-// ToDo: should be correct — per FIX 4.4 the expected behaviour is for 297
-// to land at the body level, so the assertion below should become
-// s.True(s.msg.Body.Has(Tag(297))). This test is flipped to the correct
-// expectation in the follow-up commit that fixes parseGroup.
+// Production trigger: FIX 4.4 MassQuoteAcknowledgement (35=b) with
+// NoQuoteSets(296) carrying a nested NoQuoteEntries(295) group, followed by
+// QuoteStatus(297) at the body level. Before the fix, 297 was absorbed into
+// the parent NoQuoteSets group and validateRequiredFieldMap rejected the
+// message as "Required tag missing".
 func (s *MessageSuite) TestParseGroup_BodyFieldAfterNestedGroup() {
 	dict, dictErr := datadictionary.Parse("spec/FIX44.xml")
 	s.Nil(dictErr)
@@ -488,19 +482,16 @@ func (s *MessageSuite) TestParseGroup_BodyFieldAfterNestedGroup() {
 	err := ParseMessageWithDataDictionary(s.msg, rawMsg, dict, dict)
 	s.Nil(err)
 
-	// NoQuoteSets count (group delimiter) lands in Body as expected.
+	// NoQuoteSets count (group delimiter) lands in Body.
 	s.True(s.msg.Body.Has(Tag(296)))
 
-	// ToDo: should be correct — QuoteStatus (297) must be a top-level body
-	// field per FIX 4.4. Current parseGroup logic silently absorbs 297 into
-	// the NoQuoteSets group buffer because it only checks whether the
-	// parent tag is a NumInGroup, not whether 297 is a member of the
-	// parent group template.
-	s.False(s.msg.Body.Has(Tag(297)),
-		"BUG: QuoteStatus (297) is absent from Body.FieldMap — parser "+
-			"mis-attributed it to the parent NoQuoteSets group. This "+
-			"assertion documents the bug; flip to s.True(...) when "+
-			"parseGroup is fixed.")
+	// QuoteStatus (297) must be a top-level body field per FIX 4.4.
+	s.True(s.msg.Body.Has(Tag(297)),
+		"QuoteStatus (297) must land at the body level; it is a body field "+
+			"in MassQuoteAcknowledgement, not a member of NoQuoteSets.")
+	val, verr := s.msg.Body.GetInt(Tag(297))
+	s.Nil(verr)
+	s.Equal(0, val)
 }
 
 func (s *MessageSuite) TestReverseRoute() {
