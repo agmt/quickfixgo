@@ -448,6 +448,61 @@ func (s *MessageSuite) TestReBuildWithRepeatingGroupMultipleEntriesInGroupForRes
 	s.True(bytes.Equal(expectedResendBytes, resendBytes), "Unexpected bytes,\n expected: %s\n  but was: %s", expectedResendBytes, resendBytes)
 }
 
+// TestParseGroup_BodyFieldAfterNestedGroup documents a parser bug in
+// parseGroup: when a body-level field appears on the wire immediately after
+// a nested repeating group closes, the parser misattributes it to the parent
+// group buffer instead of surfacing it at the message body level.
+//
+// Production trigger: FIX 4.4 MassQuoteAcknowledgement (35=b) wire emitted
+// by Power-Trade ME gateway — NoQuoteSets(296) carrying a nested
+// NoQuoteEntries(295) group, followed by QuoteStatus(297) at the body
+// level. Downstream, validateRequiredFieldMap can't find 297 in
+// Body.FieldMap and rejects the spec-compliant message as
+// "Required tag missing".
+//
+// ToDo: should be correct — per FIX 4.4 the expected behaviour is for 297
+// to land at the body level, so the assertion below should become
+// s.True(s.msg.Body.Has(Tag(297))). This test is flipped to the correct
+// expectation in the follow-up commit that fixes parseGroup.
+func (s *MessageSuite) TestParseGroup_BodyFieldAfterNestedGroup() {
+	dict, dictErr := datadictionary.Parse("spec/FIX44.xml")
+	s.Nil(dictErr)
+
+	// Wire layout (FIX 4.4 MassQuoteAcknowledgement):
+	//   117=QID              QuoteID (body)
+	//   296=1                NoQuoteSets count (body group)
+	//     302=SET1           QuoteSetID (inside NoQuoteSets)
+	//     295=1              NoQuoteEntries count (nested group)
+	//       299=E1           QuoteEntryID (inside NoQuoteEntries)
+	//       132=100          BidPx (inside NoQuoteEntries)
+	//       133=101          OfferPx (inside NoQuoteEntries)
+	//   297=0                QuoteStatus (BODY level, AFTER the group)
+	//
+	// Body length: 63 bytes. CheckSum: 001.
+	rawMsg := bytes.NewBufferString(
+		"8=FIX.4.4\x019=63\x0135=b\x01117=QID\x01" +
+			"296=1\x01302=SET1\x01295=1\x01299=E1\x01132=100\x01133=101\x01" +
+			"297=0\x01" +
+			"10=001\x01")
+
+	err := ParseMessageWithDataDictionary(s.msg, rawMsg, dict, dict)
+	s.Nil(err)
+
+	// NoQuoteSets count (group delimiter) lands in Body as expected.
+	s.True(s.msg.Body.Has(Tag(296)))
+
+	// ToDo: should be correct — QuoteStatus (297) must be a top-level body
+	// field per FIX 4.4. Current parseGroup logic silently absorbs 297 into
+	// the NoQuoteSets group buffer because it only checks whether the
+	// parent tag is a NumInGroup, not whether 297 is a member of the
+	// parent group template.
+	s.False(s.msg.Body.Has(Tag(297)),
+		"BUG: QuoteStatus (297) is absent from Body.FieldMap — parser "+
+			"mis-attributed it to the parent NoQuoteSets group. This "+
+			"assertion documents the bug; flip to s.True(...) when "+
+			"parseGroup is fixed.")
+}
+
 func (s *MessageSuite) TestReverseRoute() {
 	s.Nil(ParseMessage(s.msg, bytes.NewBufferString("8=FIX.4.29=17135=D34=249=TW50=KK52=20060102-15:04:0556=ISLD57=AP144=BB115=JCD116=CS128=MG129=CB142=JV143=RY145=BH11=ID21=338=10040=w54=155=INTC60=20060102-15:04:0510=123")))
 
